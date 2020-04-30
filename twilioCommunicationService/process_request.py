@@ -1,7 +1,10 @@
+# Contains open-source code attributed to https://github.com/skarlekar/faces under GNU GPL 2.0 license
+# Modified to remove conditional operators (addimg, add collection, match)
+
 import boto3
 import json
 import os
-from twilio.rest import TwilioRestClient
+from twilio.rest import Client
 import boto3 as boto
 
 def getTwilioCredentials():
@@ -10,7 +13,7 @@ def getTwilioCredentials():
     return SID,TOKEN
 
 ACCOUNT_SID, AUTH_TOKEN = getTwilioCredentials()
-twilio_client = TwilioRestClient(ACCOUNT_SID, AUTH_TOKEN)
+twilio_client = Client(ACCOUNT_SID, AUTH_TOKEN)
 sns_client = boto.client("sns")
 
 VALID_OPERATORS = ["match", "addcol", "addimg"]
@@ -83,46 +86,16 @@ def process(event, context):
     message = "All good. You should receive your response momentarily!"
     process_command = True
     service = ""
-    operation = ""
-    collection_name = ""
+    operation = "match"
+    collection_name = "celebs"
     label = ""
     topicArn = ""
     payload = ""
     publish_response = {}
     length = len(commands)
-    if length<3 or length>4:
-        message = "Usage: face match (collection-name)| face addimg (collection-name) (first-name)_(last-name) | addcol (collection-name). For match|addimg include an image attachment."
-        process_command = False
 
-    if process_command:
-        service = commands[0].lower()
-        print("Service is {}".format(service))
-
-    if process_command and service != "face":
-        print ("Not a valid service")
-        message = "I only understand service 'face' right now."
-        process_command = False
-
-    if process_command:
-        operation = commands[1].lower()
-
-    if process_command and operation not in VALID_OPERATORS:
-        message = "Valid operators for service 'face' is 'match|addcol|addimg'."
-        process_command = False
-
-    if process_command and operation == "addimg" and length <> 4:
-        message = "Syntax for adding an image to a collection is: face addimg (collection-name) (first-name)_(last-name)"
-        process_command = False
-
-    if process_command and operation == "addimg" and length == 4:
-        label = commands[3].lower()
-
-    if process_command and operation in ["addimg","match"] and len(image_url) == 0:
-        message = "Attach an image to 'match' or 'addimg' operations"
-        process_command = False
-
-    if process_command:
-        collection_name = commands[2].lower()
+    if process_command and len(image_url) != 0:
+        #collection_name = commands[2].lower()
         print("Will send message to SNS topic {}".format(SNS_TOPICS[operation]))
         topicArn = getTopicArn(SNS_TOPICS[operation])
         payload_json = { "operation": operation,

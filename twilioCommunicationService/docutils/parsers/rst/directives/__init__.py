@@ -1,4 +1,4 @@
-# $Id: __init__.py 7785 2015-02-08 23:51:45Z grubert $
+# $Id: __init__.py 8239 2018-11-21 21:46:00Z milde $
 # Author: David Goodger <goodger@python.org>
 # Copyright: This module has been placed in the public domain.
 
@@ -13,9 +13,8 @@ import codecs
 import sys
 
 from docutils import nodes
+from docutils.utils import split_escaped_whitespace, escape2null, unescape
 from docutils.parsers.rst.languages import en as _fallback_language_module
-if sys.version_info < (2,5):
-    from docutils._compat import __import__
 
 
 _directive_registry = {
@@ -189,7 +188,7 @@ def path(argument):
 
 def uri(argument):
     """
-    Return the URI argument with whitespace removed.
+    Return the URI argument with unescaped whitespace removed.
     (Directive option conversion function.)
 
     Raise ``ValueError`` if no argument is found.
@@ -197,7 +196,8 @@ def uri(argument):
     if argument is None:
         raise ValueError('argument required but none supplied')
     else:
-        uri = ''.join(argument.split())
+        parts = split_escaped_whitespace(escape2null(argument))
+        uri = ' '.join(''.join(unescape(part).split()) for part in parts)
         return uri
 
 def nonnegative_int(argument):

@@ -1,0 +1,4 @@
+/celebrityFinder/.serverless/*
+/twilioCommunicationService/.serverless/*
+/twilioTester/.serverless/*
+/.vscode/*

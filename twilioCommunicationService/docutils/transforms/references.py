@@ -1,4 +1,4 @@
-# $Id: references.py 7624 2013-03-07 14:10:26Z milde $
+# $Id: references.py 8197 2017-11-04 10:31:01Z milde $
 # Author: David Goodger <goodger@python.org>
 # Copyright: This module has been placed in the public domain.
 
@@ -692,14 +692,12 @@ class Substitutions(Transform):
                      or 'trim' in subdef.attributes):
                     if index > 0 and isinstance(parent[index - 1],
                                                 nodes.Text):
-                        parent.replace(parent[index - 1],
-                                       parent[index - 1].rstrip())
+                        parent[index - 1] = parent[index - 1].rstrip()
                 if  ('rtrim' in subdef.attributes
                      or 'trim' in subdef.attributes):
                     if  (len(parent) > index + 1
                          and isinstance(parent[index + 1], nodes.Text)):
-                        parent.replace(parent[index + 1],
-                                       parent[index + 1].lstrip())
+                        parent[index + 1] = parent[index + 1].lstrip()
                 subdef_copy = subdef.deepcopy()
                 try:
                     # Take care of nested substitution references:
@@ -710,6 +708,7 @@ class Substitutions(Transform):
                             raise CircularSubstitutionDefinitionError
                         else:
                             nested[nested_name].append(key)
+                            nested_ref['ref-origin'] = ref
                             subreflist.append(nested_ref)
                 except CircularSubstitutionDefinitionError:
                     parent = ref.parent
@@ -721,9 +720,13 @@ class Substitutions(Transform):
                             line=parent.line, base_node=parent)
                         parent.replace_self(msg)
                     else:
+                        # find original ref substitution which cased this error
+                        ref_origin = ref
+                        while ref_origin.hasattr('ref-origin'):
+                            ref_origin = ref_origin['ref-origin']
                         msg = self.document.reporter.error(
-                            'Circular substitution definition referenced: "%s".'
-                            % refname, base_node=ref)
+                            'Circular substitution definition referenced: '
+                            '"%s".' % refname, base_node=ref_origin)
                         msgid = self.document.set_id(msg)
                         prb = nodes.problematic(
                             ref.rawsource, ref.rawsource, refid=msgid)
@@ -863,7 +866,7 @@ class DanglingReferences(Transform):
 
 
 class DanglingReferencesVisitor(nodes.SparseNodeVisitor):
-    
+
     def __init__(self, document, unknown_reference_resolvers):
         nodes.SparseNodeVisitor.__init__(self, document)
         self.document = document
@@ -893,7 +896,10 @@ class DanglingReferencesVisitor(nodes.SparseNodeVisitor):
                 msgid = self.document.set_id(msg)
                 prb = nodes.problematic(
                       node.rawsource, node.rawsource, refid=msgid)
-                prbid = self.document.set_id(prb)
+                try:
+                    prbid = node['ids'][0]
+                except IndexError:
+                    prbid = self.document.set_id(prb)
                 msg.add_backref(prbid)
                 node.replace_self(prb)
         else:

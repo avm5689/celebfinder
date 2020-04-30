@@ -1,4 +1,4 @@
-# $Id: states.py 7958 2016-07-28 21:52:14Z milde $
+# $Id: states.py 8236 2018-11-21 13:58:57Z milde $
 # Author: David Goodger <goodger@python.org>
 # Copyright: This module has been placed in the public domain.
 
@@ -117,6 +117,7 @@ from docutils.parsers.rst import directives, languages, tableparser, roles
 from docutils.parsers.rst.languages import en as _fallback_language_module
 from docutils.utils import escape2null, unescape, column_width
 from docutils.utils import punctuation_chars, roman, urischemes
+from docutils.utils import split_escaped_whitespace
 
 class MarkupError(DataError): pass
 class UnknownInterpretedRoleError(DataError): pass
@@ -423,7 +424,9 @@ class RSTState(StateWS):
         """
         Return 2 lists: nodes (text and inline elements), and system_messages.
         """
-        return self.inliner.parse(text, lineno, self.memo, self.parent)
+        nodes, messages = self.inliner.parse(text, lineno,
+                                             self.memo, self.parent)
+        return nodes, messages
 
     def unindent_warning(self, node_name):
         # the actual problem is one line below the current line
@@ -463,11 +466,13 @@ class Inliner:
     """
 
     def __init__(self):
-        pass
+        self.implicit_dispatch = []
+        """List of (pattern, bound method) tuples, used by
+        `self.implicit_inline`."""
 
     def init_customizations(self, settings):
         # lookahead and look-behind expressions for inline markup rules
-        if settings.character_level_inline_markup:
+        if getattr(settings, 'character_level_inline_markup', False):
             start_string_prefix = u'(^|(?<!\x00))'
             end_string_suffix = u''
         else:
@@ -478,7 +483,6 @@ class Inliner:
                                  (punctuation_chars.closing_delimiters,
                                   punctuation_chars.delimiters,
                                   punctuation_chars.closers))
-
         args = locals().copy()
         args.update(vars(self.__class__))
 
@@ -508,6 +512,9 @@ class Inliner:
              )
             ]
            )
+        self.start_string_prefix = start_string_prefix
+        self.end_string_suffix = end_string_suffix
+        self.parts = parts
 
         self.patterns = Struct(
           initial=build_regexp(parts),
@@ -540,12 +547,12 @@ class Inliner:
               $                         # end of string
               """ % args, re.VERBOSE | re.UNICODE),
           literal=re.compile(self.non_whitespace_before + '(``)'
-                             + end_string_suffix),
+                             + end_string_suffix, re.UNICODE),
           target=re.compile(self.non_whitespace_escape_before
-                            + r'(`)' + end_string_suffix),
+                            + r'(`)' + end_string_suffix, re.UNICODE),
           substitution_ref=re.compile(self.non_whitespace_escape_before
                                       + r'(\|_{0,2})'
-                                      + end_string_suffix),
+                                      + end_string_suffix, re.UNICODE),
           email=re.compile(self.email_pattern % args + '$',
                            re.VERBOSE | re.UNICODE),
           uri=re.compile(
@@ -595,10 +602,8 @@ class Inliner:
                 (RFC(-|\s+)?(?P<rfcnum>\d+))
                 %(end_string_suffix)s""" % args, re.VERBOSE | re.UNICODE))
 
-        self.implicit_dispatch = [(self.patterns.uri, self.standalone_uri),]
-        """List of (pattern, bound method) tuples, used by
-        `self.implicit_inline`."""
-
+        self.implicit_dispatch.append((self.patterns.uri,
+                                       self.standalone_uri))
         if settings.pep_references:
             self.implicit_dispatch.append((self.patterns.pep,
                                            self.pep_reference))
@@ -656,12 +661,11 @@ class Inliner:
 
     # Inline object recognition
     # -------------------------
-    # print start_string_prefix.encode('utf8')
-    # TODO: support non-ASCII whitespace in the following 4 patterns?
-    non_whitespace_before = r'(?<![ \n])'
-    non_whitespace_escape_before = r'(?<![ \n\x00])'
-    non_unescaped_whitespace_escape_before = r'(?<!(?<!\x00)[ \n\x00])'
-    non_whitespace_after = r'(?![ \n])'
+    # See also init_customizations().
+    non_whitespace_before = r'(?<!\s)'
+    non_whitespace_escape_before = r'(?<![\s\x00])'
+    non_unescaped_whitespace_escape_before = r'(?<!(?<!\x00)[\s\x00])'
+    non_whitespace_after = r'(?!\s)'
     # Alphanumerics with isolated internal [-._+:] chars (i.e. not 2 together):
     simplename = r'(?:(?!_)\w)+(?:[-._+:](?:(?!_)\w)+)*'
     # Valid URI characters (see RFC 2396 & RFC 2732);
@@ -709,17 +713,19 @@ class Inliner:
             return (string[:matchend], [], string[matchend:], [], '')
         endmatch = end_pattern.search(string[matchend:])
         if endmatch and endmatch.start(1):  # 1 or more chars
-            text = unescape(endmatch.string[:endmatch.start(1)],
-                            restore_backslashes)
+            _text = endmatch.string[:endmatch.start(1)]
+            text = unescape(_text, restore_backslashes)
             textend = matchend + endmatch.end(1)
-            rawsource = unescape(string[matchstart:textend], 1)
-            return (string[:matchstart], [nodeclass(rawsource, text)],
+            rawsource = unescape(string[matchstart:textend], True)
+            node = nodeclass(rawsource, text)
+            node[0].rawsource = unescape(_text, True)
+            return (string[:matchstart], [node],
                     string[textend:], [], endmatch.group(1))
         msg = self.reporter.warning(
               'Inline %s start-string without end-string.'
               % nodeclass.__name__, line=lineno)
-        text = unescape(string[matchstart:matchend], 1)
-        rawsource = unescape(string[matchstart:matchend], 1)
+        text = unescape(string[matchstart:matchend], True)
+        rawsource = unescape(string[matchstart:matchend], True)
         prb = self.problematic(text, rawsource, msg)
         return string[:matchstart], [prb], string[matchend:], [msg], ''
 
@@ -762,25 +768,25 @@ class Inliner:
                         'Multiple roles in interpreted text (both '
                         'prefix and suffix present; only one allowed).',
                         line=lineno)
-                    text = unescape(string[rolestart:textend], 1)
+                    text = unescape(string[rolestart:textend], True)
                     prb = self.problematic(text, text, msg)
                     return string[:rolestart], [prb], string[textend:], [msg]
                 role = endmatch.group('suffix')[1:-1]
                 position = 'suffix'
             escaped = endmatch.string[:endmatch.start(1)]
-            rawsource = unescape(string[matchstart:textend], 1)
+            rawsource = unescape(string[matchstart:textend], True)
             if rawsource[-1:] == '_':
                 if role:
                     msg = self.reporter.warning(
                           'Mismatch: both interpreted text role %s and '
                           'reference suffix.' % position, line=lineno)
-                    text = unescape(string[rolestart:textend], 1)
+                    text = unescape(string[rolestart:textend], True)
                     prb = self.problematic(text, text, msg)
                     return string[:rolestart], [prb], string[textend:], [msg]
                 return self.phrase_ref(string[:matchstart], string[textend:],
                                        rawsource, escaped, unescape(escaped))
             else:
-                rawsource = unescape(string[rolestart:textend], 1)
+                rawsource = unescape(string[rolestart:textend], True)
                 nodelist, messages = self.interpreted(rawsource, escaped, role,
                                                       lineno)
                 return (string[:rolestart], nodelist,
@@ -788,7 +794,7 @@ class Inliner:
         msg = self.reporter.warning(
               'Inline interpreted text or phrase reference start-string '
               'without end-string.', line=lineno)
-        text = unescape(string[matchstart:matchend], 1)
+        text = unescape(string[matchstart:matchend], True)
         prb = self.problematic(text, text, msg)
         return string[:matchstart], [prb], string[matchend:], [msg]
 
@@ -796,9 +802,10 @@ class Inliner:
         match = self.patterns.embedded_link.search(escaped)
         if match: # embedded <URI> or <alias_>
             text = unescape(escaped[:match.start(0)])
-            aliastext = match.group(2)
-            underscore_escaped = aliastext.endswith('\x00_')
-            aliastext = unescape(aliastext)
+            rawtext = unescape(escaped[:match.start(0)], True)
+            aliastext = unescape(match.group(2))
+            rawaliastext = unescape(match.group(2), True)
+            underscore_escaped = rawaliastext.endswith(r'\_')
             if aliastext.endswith('_') and not (underscore_escaped
                                         or self.patterns.uri.match(aliastext)):
                 aliastype = 'name'
@@ -807,7 +814,9 @@ class Inliner:
                 target.indirect_reference_name = aliastext[:-1]
             else:
                 aliastype = 'uri'
-                alias = ''.join(aliastext.split())
+                alias_parts = split_escaped_whitespace(match.group(2))
+                alias = ' '.join(''.join(unescape(part).split())
+                                 for part in alias_parts)
                 alias = self.adjust_uri(alias)
                 if alias.endswith(r'\_'):
                     alias = alias[:-2] + '_'
@@ -818,12 +827,16 @@ class Inliner:
                                        % aliastext)
             if not text:
                 text = alias
+                rawtext = rawaliastext
         else:
             target = None
+            rawtext = unescape(escaped, True)
 
         refname = normalize_name(text)
         reference = nodes.reference(rawsource, text,
                                     name=whitespace_normalize_name(text))
+        reference[0].rawsource = rawtext
+
         node_list = [reference]
 
         if rawsource[-2:] == '__':
@@ -865,6 +878,10 @@ class Inliner:
                                        self.reporter)
         if role_fn:
             nodes, messages2 = role_fn(role, rawsource, text, lineno, self)
+            try:
+                nodes[0][0].rawsource = unescape(text, True)
+            except IndexError:
+                pass
             return nodes, messages + messages2
         else:
             msg = self.reporter.error(
@@ -952,6 +969,7 @@ class Inliner:
         referencenode = nodes.reference(
             referencename + match.group('refend'), referencename,
             name=whitespace_normalize_name(referencename))
+        referencenode[0].rawsource = referencename
         if anonymous:
             referencenode['anonymous'] = 1
         else:
@@ -973,9 +991,12 @@ class Inliner:
             else:
                 addscheme = ''
             text = match.group('whole')
-            unescaped = unescape(text, 0)
-            return [nodes.reference(unescape(text, 1), unescaped,
-                                    refuri=addscheme + unescaped)]
+            unescaped = unescape(text)
+            rawsource = unescape(text, True)
+            reference = nodes.reference(rawsource, unescaped,
+                                        refuri=addscheme + unescaped)
+            reference[0].rawsource = rawsource
+            return [reference]
         else:                   # not a valid scheme
             raise MarkupMismatch
 
@@ -989,8 +1010,8 @@ class Inliner:
             raise MarkupMismatch
         ref = (self.document.settings.pep_base_url
                + self.document.settings.pep_file_url_template % pepnum)
-        unescaped = unescape(text, 0)
-        return [nodes.reference(unescape(text, 1), unescaped, refuri=ref)]
+        unescaped = unescape(text)
+        return [nodes.reference(unescape(text, True), unescaped, refuri=ref)]
 
     rfc_url = 'rfc%d.html'
 
@@ -1001,8 +1022,8 @@ class Inliner:
             ref = self.document.settings.rfc_base_url + self.rfc_url % rfcnum
         else:
             raise MarkupMismatch
-        unescaped = unescape(text, 0)
-        return [nodes.reference(unescape(text, 1), unescaped, refuri=ref)]
+        unescaped = unescape(text)
+        return [nodes.reference(unescape(text, True), unescaped, refuri=ref)]
 
     def implicit_inline(self, text, lineno):
         """
@@ -1024,7 +1045,7 @@ class Inliner:
                             self.implicit_inline(text[match.end():], lineno))
                 except MarkupMismatch:
                     pass
-        return [nodes.Text(unescape(text), rawsource=unescape(text, 1))]
+        return [nodes.Text(unescape(text), rawsource=unescape(text, True))]
 
     dispatch = {'*': emphasis,
                 '**': strong,
@@ -1115,7 +1136,7 @@ class Body(RSTState):
     patterns = {
           'bullet': u'[-+*\u2022\u2023\u2043]( +|$)',
           'enumerator': r'(%(parens)s|%(rparen)s|%(period)s)( +|$)' % pats,
-          'field_marker': r':(?![: ])([^:\\]|\\.)*(?<! ):( +|$)',
+          'field_marker': r':(?![: ])([^:\\]|\\.|:(?!([ `]|$)))*(?<! ):( +|$)',
           'option_marker': r'%(option)s(, %(option)s)*(  +| ?$)' % pats,
           'doctest': r'>>>( +|$)',
           'line_block': r'\|( +|$)',
@@ -1767,8 +1788,10 @@ class Body(RSTState):
     def build_table(self, tabledata, tableline, stub_columns=0, widths=None):
         colwidths, headrows, bodyrows = tabledata
         table = nodes.table()
-        if widths:
-            table['classes'] += ['colwidths-%s' % widths]
+        if widths == 'auto':
+            table['classes'] += ['colwidths-auto']
+        elif widths: # "grid" or list of integers
+            table['classes'] += ['colwidths-given']
         tgroup = nodes.tgroup(cols=len(colwidths))
         table += tgroup
         for colwidth in colwidths:
@@ -1958,8 +1981,10 @@ class Body(RSTState):
             refname = self.is_reference(reference)
             if refname:
                 return 'refname', refname
-        reference = ''.join([''.join(line.split()) for line in block])
-        return 'refuri', unescape(reference)
+        ref_parts = split_escaped_whitespace(' '.join(block))
+        reference = ' '.join(''.join(unescape(part).split())
+                             for part in ref_parts)
+        return 'refuri', reference
 
     def is_reference(self, reference):
         match = self.explicit.patterns.reference.match(
@@ -2040,7 +2065,8 @@ class Body(RSTState):
             if self.disallowed_inside_substitution_definitions(node):
                 pformat = nodes.literal_block('', node.pformat().rstrip())
                 msg = self.reporter.error(
-                    'Substitution definition contains illegal element:',
+                    'Substitution definition contains illegal element <%s>:'
+                    % node.tagname,
                     pformat, nodes.literal_block(blocktext, blocktext),
                     source=src, line=srcline)
                 return [msg], blank_finish
@@ -2058,9 +2084,9 @@ class Body(RSTState):
         if (node['ids'] or
             isinstance(node, nodes.reference) and node.get('anonymous') or
             isinstance(node, nodes.footnote_reference) and node.get('auto')):
-            return 1
+            return True
         else:
-            return 0
+            return False
 
     def directive(self, match, **option_presets):
         """Returns a 2-tuple: list of nodes, and a "blank finish" boolean."""
@@ -2777,7 +2803,8 @@ class Text(RSTState):
             return self.quoted_literal_block()
         data = '\n'.join(indented)
         literal_block = nodes.literal_block(data, data)
-        literal_block.line = offset + 1
+        (literal_block.source,
+         literal_block.line) = self.state_machine.get_source_and_line(offset+1)
         nodelist = [literal_block]
         if not blank_finish:
             nodelist.append(self.unindent_warning('Literal block'))
@@ -2821,23 +2848,23 @@ class Text(RSTState):
         """Return a definition_list's term and optional classifiers."""
         assert len(lines) == 1
         text_nodes, messages = self.inline_text(lines[0], lineno)
-        term_node = nodes.term()
+        term_node = nodes.term(lines[0])
         (term_node.source,
          term_node.line) = self.state_machine.get_source_and_line(lineno)
-        term_node.rawsource = unescape(lines[0])
         node_list = [term_node]
         for i in range(len(text_nodes)):
             node = text_nodes[i]
             if isinstance(node, nodes.Text):
-                parts = self.classifier_delimiter.split(node.rawsource)
+                parts = self.classifier_delimiter.split(node)
                 if len(parts) == 1:
                     node_list[-1] += node
                 else:
-
-                    node_list[-1] += nodes.Text(parts[0].rstrip())
+                    text = parts[0].rstrip()
+                    textnode = nodes.Text(utils.unescape(text, True))
+                    node_list[-1] += textnode
                     for part in parts[1:]:
-                        classifier_node = nodes.classifier('', part)
-                        node_list.append(classifier_node)
+                        node_list.append(
+                            nodes.classifier(unescape(part, True), part))
             else:
                 node_list[-1] += node
         return node_list, messages

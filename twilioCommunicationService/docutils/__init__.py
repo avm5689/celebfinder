@@ -1,4 +1,4 @@
-# $Id: __init__.py 7984 2016-12-09 09:48:27Z grubert $
+# $Id: __init__.py 8304 2019-07-30 09:51:07Z grubert $
 # Author: David Goodger <goodger@python.org>
 # Copyright: This module has been placed in the public domain.
 
@@ -50,30 +50,45 @@ Subpackages:
 - writers: Format-specific output translators.
 """
 
+import sys
+from collections import namedtuple
+
+
 __docformat__ = 'reStructuredText'
 
-__version__ = '0.13.1'
-"""``major.minor.micro`` version number.  The micro number is bumped for API
-changes, for new functionality, and for interim project releases.  The minor
-number is bumped whenever there is a significant project release.  The major
-number will be bumped when the project is feature-complete, and perhaps if
-there is a major change in the design."""
+__version__ = '0.15.2'
+"""Docutils version identifier (complies with PEP 440)::
+
+    major.minor[.micro][releaselevel[serial]][.dev]
+
+For version comparison operations, use `__version_info__` (which see, below)
+rather than parsing the text of `__version__`.
+
+See 'Version Numbering' in docs/dev/policies.txt.
+"""
+
+VersionInfo = namedtuple(
+    'VersionInfo', 'major minor micro releaselevel serial release')
+
+__version_info__ = VersionInfo(
+    major=0,
+    minor=15,
+    micro=2,
+    releaselevel='final', # one of 'alpha', 'beta', 'candidate', 'final'
+    # pre-release serial number (0 for final releases and active development):
+    serial=0,
+    release=True # True for official releases and pre-releases
+    )
+"""Comprehensive version information tuple. See 'Version Numbering' in
+docs/dev/policies.txt."""
 
 __version_details__ = 'release'
-"""Extra version details (e.g. 'snapshot 2005-05-29, r3410', 'repository',
-'release'), modified automatically & manually."""
+"""Optional extra version details (e.g. 'snapshot 2005-05-29, r3410').
+(For development and release status see `__version_info__`.)
+"""
 
-import sys
 
-class ApplicationError(StandardError):
-    # Workaround:
-    # In Python < 2.6, unicode(<exception instance>) calls `str` on the
-    # arg and therefore, e.g., unicode(StandardError(u'\u234')) fails
-    # with UnicodeDecodeError.
-    if sys.version_info < (2,6):
-        def __unicode__(self):
-            return u', '.join(self.args)
-
+class ApplicationError(StandardError): pass
 class DataError(ApplicationError): pass
 
 

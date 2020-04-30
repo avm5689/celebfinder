@@ -1,6 +1,8 @@
+# Contains open-source code attributed to https://github.com/skarlekar/faces under GNU GPL 2.0 license
+
 import os
 import json
-from twilio.rest import TwilioRestClient
+from twilio.rest import Client
 import boto3 as boto
 
 def getTwilioCredentials():
@@ -9,7 +11,7 @@ def getTwilioCredentials():
     return SID,TOKEN
 
 ACCOUNT_SID, AUTH_TOKEN = getTwilioCredentials()
-twilio_client = TwilioRestClient(ACCOUNT_SID, AUTH_TOKEN)
+twilio_client = Client(ACCOUNT_SID, AUTH_TOKEN)
 
 def getTwilioFromTo():
     fromNumber = os.environ['TWILIO_FROM_NUMBER']
@@ -27,8 +29,8 @@ def sendMessage(toNum, fromNum, msgBody, media):
 
 def sendMessage(toNum, fromNum, msgBody):
     twilio_client.messages.create(
-        to = toNum,
-        from_= fromNum,
+        to = fromNum, # Inverted due to a weird bug I can't fix
+        from_= toNum, # Inverted due to a weird bug I can't fix
         body= msgBody
     )
     return None
@@ -58,7 +60,6 @@ def process(event, context):
 
     print("Debug message:------------------------")
     print("Message: {}".format(message))
-    print("Biography: {}".format(biography))
     print("From Number: {}".format(received_from))
     print("---------------------------------------")
 

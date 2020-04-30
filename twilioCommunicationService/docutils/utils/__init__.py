@@ -1,5 +1,5 @@
 # coding: utf-8
-# $Id: __init__.py 7668 2013-06-04 12:46:30Z milde $
+# $Id: __init__.py 8295 2019-07-24 09:22:01Z grubert $
 # Author: David Goodger <goodger@python.org>
 # Copyright: This module has been placed in the public domain.
 
@@ -13,10 +13,12 @@ import sys
 import os
 import os.path
 import re
+import itertools
 import warnings
 import unicodedata
-from docutils import ApplicationError, DataError
+from docutils import ApplicationError, DataError, __version_info__
 from docutils import nodes
+from docutils.nodes import unescape
 import docutils.io
 from docutils.utils.error_reporting import ErrorOutput, SafeString
 
@@ -575,17 +577,17 @@ def escape2null(text):
         parts.append('\x00' + text[found+1:found+2])
         start = found + 2               # skip character after escape
 
-def unescape(text, restore_backslashes=False):
+# `unescape` definition moved to `nodes` to avoid circular import dependency.
+
+def split_escaped_whitespace(text):
     """
-    Return a string with nulls removed or restored to backslashes.
-    Backslash-escaped spaces are also removed.
+    Split `text` on escaped whitespace (null+space or null+newline).
+    Return a list of strings.
     """
-    if restore_backslashes:
-        return text.replace('\x00', '\\')
-    else:
-        for sep in ['\x00 ', '\x00\n', '\x00']:
-            text = ''.join(text.split(sep))
-        return text
+    strings = text.split('\x00 ')
+    strings = [string.split('\x00\n') for string in strings]
+    # flatten list of lists of strings to list of strings:
+    return list(itertools.chain(*strings))
 
 def strip_combining_chars(text):
     if isinstance(text, str) and sys.version_info < (3,0):
@@ -595,8 +597,10 @@ def strip_combining_chars(text):
 def find_combining_chars(text):
     """Return indices of all combining chars in  Unicode string `text`.
 
+    >>> from docutils.utils import find_combining_chars
     >>> find_combining_chars(u'A t̆ab̆lĕ')
     [3, 6, 9]
+
     """
     if isinstance(text, str) and sys.version_info < (3,0):
         return []
@@ -605,8 +609,10 @@ def find_combining_chars(text):
 def column_indices(text):
     """Indices of Unicode string `text` when skipping combining characters.
 
+    >>> from docutils.utils import column_indices
     >>> column_indices(u'A t̆ab̆lĕ')
     [0, 1, 2, 4, 5, 7, 8]
+
     """
     # TODO: account for asian wide chars here instead of using dummy
     # replacements in the tableparser?
@@ -632,11 +638,8 @@ def column_width(text):
     """
     if isinstance(text, str) and sys.version_info < (3,0):
         return len(text)
-    try:
-        width = sum([east_asian_widths[unicodedata.east_asian_width(c)]
-                     for c in text])
-    except AttributeError:  # east_asian_width() New in version 2.4.
-        width = len(text)
+    width = sum([east_asian_widths[unicodedata.east_asian_width(c)]
+                 for c in text])
     # correction for combining chars:
     width -= len(find_combining_chars(text))
     return width
@@ -648,34 +651,36 @@ def uniq(L):
              r.append(item)
      return r
 
-# by Li Daobing http://code.activestate.com/recipes/190465/
-# since Python 2.6 there is also itertools.combinations()
 def unique_combinations(items, n):
-    """Return n-length tuples, in sorted order, no repeated elements"""
-    if n==0: yield []
-    else:
-        for i in xrange(len(items)-n+1):
-            for cc in unique_combinations(items[i+1:],n-1):
-                yield [items[i]]+cc
+    """Return `itertools.combinations`."""
+    warnings.warn('docutils.utils.unique_combinations is deprecated; '
+                  'use itertools.combinations directly.',
+                      DeprecationWarning, stacklevel=2)
+    return itertools.combinations(items, n)
 
 def normalize_language_tag(tag):
     """Return a list of normalized combinations for a `BCP 47` language tag.
 
     Example:
 
+    >>> from docutils.utils import normalize_language_tag
     >>> normalize_language_tag('de_AT-1901')
     ['de-at-1901', 'de-at', 'de-1901', 'de']
+    >>> normalize_language_tag('de-CH-x_altquot')
+    ['de-ch-x-altquot', 'de-ch', 'de-x-altquot', 'de']
+
     """
     # normalize:
-    tag = tag.lower().replace('_','-')
+    tag = tag.lower().replace('-','_')
     # split (except singletons, which mark the following tag as non-standard):
-    tag = re.sub(r'-([a-zA-Z0-9])-', r'-\1_', tag)
-    taglist = []
-    subtags = [subtag.replace('_', '-') for subtag in tag.split('-')]
-    base_tag = [subtags.pop(0)]
+    tag = re.sub(r'_([a-zA-Z0-9])_', r'_\1-', tag)
+    subtags = [subtag for subtag in tag.split('_')]
+    base_tag = (subtags.pop(0),)
     # find all combinations of subtags
+    taglist = []
     for n in range(len(subtags), 0, -1):
-        for tags in unique_combinations(subtags, n):
+        # for tags in unique_combinations(subtags, n):
+        for tags in itertools.combinations(subtags, n):
             taglist.append('-'.join(base_tag+tags))
     taglist += base_tag
     return taglist
@@ -747,3 +752,44 @@ class DependencyList(object):
         except AttributeError:
             output_file = None
         return '%s(%r, %s)' % (self.__class__.__name__, output_file, self.list)
+
+
+release_level_abbreviations = {
+    'alpha':     'a',
+    'beta':      'b',
+    'candidate': 'rc',
+    'final':     '',}
+
+def version_identifier(version_info=None):
+    """
+    Return a version identifier string built from `version_info`, a
+    `docutils.VersionInfo` namedtuple instance or compatible tuple. If
+    `version_info` is not provided, by default return a version identifier
+    string based on `docutils.__version_info__` (i.e. the current Docutils
+    version).
+    """
+    if version_info is None:
+        version_info = __version_info__
+    if version_info.micro:
+        micro = '.%s' % version_info.micro
+    else:
+        # 0 is omitted:
+        micro = ''
+    releaselevel = release_level_abbreviations[version_info.releaselevel]
+    if version_info.serial:
+        serial = version_info.serial
+    else:
+        # 0 is omitted:
+        serial = ''
+    if version_info.release:
+        dev = ''
+    else:
+        dev = '.dev'
+    version = '%s.%s%s%s%s%s' % (
+        version_info.major,
+        version_info.minor,
+        micro,
+        releaselevel,
+        serial,
+        dev)
+    return version
